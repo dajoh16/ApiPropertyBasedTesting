@@ -1,46 +1,91 @@
-﻿open System
+﻿module Program
+open System
+open System.Threading
+open System.Linq
+open System.Collections.Generic
 open FsCheck
+open FsCheck.Experimental
 open FSharp.Data
+open FSharp.Data.HttpRequestHeaders
+open Test
+
  
+type ApiWrapper() =
+    let url = "http://localhost:3000"
+    member __.GetItem(id) = Thread.Sleep(10)
+                            Http.RequestString(url + "/api/shop/get/" + id, httpMethod="GET")
+    member __.CreateItem() = Thread.Sleep(10)
+                             Http.RequestString(url + "/api/shop/create/item", httpMethod = "POST",
+                                                    headers = [ ContentType HttpContentTypes.Json],
+                                                    body = TextRequest """ {"test": 42} """)
+    
+    member __.Reset() = Http.RequestString(url + "/api/shop/reset", httpMethod = "POST")
 
+let jsonParse json = JsonValue.Parse(json)
 
-type Counter() =
-    let mutable n = 0
-    member __.Inc() = n <- n + 1
+let findId (json:string, key:string) = let jsonParsed = jsonParse json
+                                       let res = JsonExtensions.Item(jsonParsed, key).AsString()
+                                       res
 
-    member __.Dec() = n <- n - 1
-    member __.Get = n
-    member __.Reset() = n <- 0
-    member __.ToString() = sprintf "Counter=%i" n
+type ApiModel() =
+    let model = Dictionary<int,string>()
 
-let spec =
-    let inc =
-        { new Command<Counter, int>() with
-
-            member __.RunActual counter =
-                counter.Inc()
-                counter
-
-            member __.RunModel m = m + 1
-            member __.Post(counter, m) = counter.Get = m |@ sprintf "model: %i <> %A" m counter
-            member __.ToString() = "inc" }
-
-    let dec =
-        { new Command<Counter, int>() with
-
-            member __.RunActual counter =
-                counter.Dec()
-                counter
-            member __.RunModel m = m - 1
-            member __.Post(counter, m) = counter.Get = m |@ sprintf "model: %i <> %A" m counter
-            member __.ToString() = "dec" }
-
-    { new ICommandGenerator<Counter, int> with
-        member __.InitialActual = Counter()
-        member __.InitialModel = 0
-        member __.Next model = Gen.elements [ inc; dec ] }
-
+    member __.LookupIx(index) = model.[index]
+    //{
+    //  "test": 42
+    //  "id": 735
+    //}
+    member __.GetUserId(index) = let json = __.LookupIx(index)
+                                 findId (json, "id")
+    member __.Get(index) = model.[index]
+    member __.Create(index) = model.Add(index,""" {"test": 42} """)
+    member __.CreateReal(index, item) = model.Remove(index) |> ignore
+                                        model.Add(index,item)
+    member __.Contains(index) = model.ContainsKey(index)
+    
+    member __.Reset() = model.Clear
+    override __.ToString() = String.Join(" ; ", model.Select(fun x -> String.Join("=",x.Key,x.Value)))
+    //override __.ToString() = "API Model"
+    
+    
+let apiSpec =
+    let GetCmd index = {
+            new Operation<ApiWrapper, ApiModel>() with
+            member __.Run m = m
+            override __.Pre m = m.Contains(index)
+            member __.Check(sut, m) = let sutItem = sut.GetItem(m.GetUserId(index))
+                                      let mItem = m.Get(index)
+                                      String.Compare(mItem, sutItem) = 0 |@ sprintf "Get: model = %s, actual = %O" mItem sutItem
+            override __.ToString() = "Get " + string index
+            }
+    let CreateCmd index = {
+            new Operation<ApiWrapper, ApiModel>() with
+             
+            member __.Run m =  m.Create(index)
+                               m
+            override __.Pre m = not (m.Contains(index))
+            member __.Check(sut,m) = let realItem = sut.CreateItem()
+                                     m.CreateReal(index, realItem) |@ "Create: model = true, actual = true"
+            override __.ToString() = "Create " + string index
+            }
+    let create = {
+            new Setup<ApiWrapper,ApiModel>() with
+            override __.Actual() = let wrap = ApiWrapper()
+                                   wrap.Reset() |> ignore
+                                   wrap
+            override __.Model() = ApiModel()
+            }                    
+    
+    {
+      new Machine<ApiWrapper,ApiModel>() with
+      override __.Setup = create |> Gen.constant |> Arb.fromGen
+      override __.Next m = Gen.elements [ CreateCmd (Gen.choose(1,50) |> Gen.sample 0 1 |> Seq.exactlyOne); GetCmd (Gen.choose(1,50) |> Gen.sample 0 1 |> Seq.exactlyOne)]
+    }
+    
+ 
 [<EntryPoint>]
 let main argv =
-    Check.Quick (Command.toProperty spec)
+    Check.One ({ Config.Quick with MaxTest = 5000; QuietOnSuccess=true }, StateMachine.toProperty apiSpec)
+    //let toPrint = test "test" "test"
+    //printf "%s" toPrint
     0 // return an integer exit code

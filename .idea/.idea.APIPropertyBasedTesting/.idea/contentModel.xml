@@ -9,6 +9,7 @@
         <e p="bin" t="ExcludeRecursive" />
         <e p="obj" t="ExcludeRecursive" />
         <e p="Program.fs" t="Include" />
+        <e p="TestTest.fs" t="Include" />
       </e>
       <e p="APIPropertyBasedTesting.sln" t="IncludeFlat" />
       <e p="packages" t="ExcludeRecursive" />
